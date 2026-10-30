@@ -1,0 +1,6 @@
+steam_config.json
+steam_browser_profile/
+__pycache__/
+*.pyc
+.venv/
+venv/
