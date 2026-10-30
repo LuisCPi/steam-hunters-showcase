@@ -122,18 +122,32 @@ def _cache_set(bucket, key, value):
 def _sh_get(url, retries=2, backoff=1.5):
     """
     GET a SteamHunters con un par de reintentos ante timeouts/errores de red
-    transitorios (el sitio a veces tarda o falla bajo los 10 workers
-    concurrentes). Si se agotan los reintentos, retorna None en vez de
-    lanzar la excepción, para que el juego se trate como "sin datos" en
-    lugar de tumbar toda la corrida.
+    transitorios y ante respuestas 429 (rate limit) o 5xx (error del
+    servidor) — el sitio a veces tarda, se cae momentáneamente, o frena las
+    10 llamadas concurrentes de los workers. Si se agotan los reintentos,
+    retorna la última respuesta recibida (o None si fue un error de red) en
+    vez de lanzar, para que el juego se trate como "sin datos" en lugar de
+    tumbar toda la corrida.
     """
+    last_response = None
     for attempt in range(retries + 1):
         try:
-            return SESSION.get(url, timeout=REQ_TIMEOUT)
+            r = SESSION.get(url, timeout=REQ_TIMEOUT)
         except requests.exceptions.RequestException:
             if attempt == retries:
                 return None
             time.sleep(backoff * (attempt + 1))
+            continue
+
+        if r.status_code == 429 or r.status_code >= 500:
+            last_response = r
+            if attempt == retries:
+                return r
+            time.sleep(backoff * (attempt + 1))
+            continue
+
+        return r
+    return last_response
 
 
 def get_sh_percentages(appid):
