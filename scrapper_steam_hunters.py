@@ -1,5 +1,8 @@
+import argparse
 import json
 import os
+import threading
+import time
 import requests
 from bs4 import BeautifulSoup
 from tqdm import tqdm
@@ -19,6 +22,12 @@ REQ_TIMEOUT  = 15
 
 DEFAULT_ACHIEVEMENT_SLOTS = 21
 DEFAULT_COMPLETIST_SLOTS  = 6
+
+SH_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sh_cache.json")
+SH_CACHE_TTL  = 24 * 60 * 60  # la rareza en SteamHunters casi no cambia día a día
+
+_sh_cache_lock = threading.Lock()
+_sh_cache = {"percentages": {}, "completion_pct": {}}
 
 # Sesión compartida: reutiliza conexiones TCP/TLS entre los workers en vez de
 # abrir una nueva por request (grandes ahorros con cientos de llamadas).
@@ -70,16 +79,55 @@ def refresh_steamhunters():
     input("   → Cuando termine, presiona Enter aquí para continuar...")
 
 
+def _load_sh_cache():
+    global _sh_cache
+    if os.path.exists(SH_CACHE_FILE):
+        with open(SH_CACHE_FILE, "r", encoding="utf-8") as f:
+            try:
+                _sh_cache = json.load(f)
+            except json.JSONDecodeError:
+                pass
+    _sh_cache.setdefault("percentages", {})
+    _sh_cache.setdefault("completion_pct", {})
+
+
+def _save_sh_cache():
+    with _sh_cache_lock:
+        with open(SH_CACHE_FILE, "w", encoding="utf-8") as f:
+            json.dump(_sh_cache, f)
+
+
+def _cache_get(bucket, key):
+    with _sh_cache_lock:
+        entry = _sh_cache[bucket].get(str(key))
+    if not entry or time.time() - entry["ts"] > SH_CACHE_TTL:
+        return None
+    return entry["value"]
+
+
+def _cache_set(bucket, key, value):
+    with _sh_cache_lock:
+        _sh_cache[bucket][str(key)] = {"ts": time.time(), "value": value}
+
+
 def get_sh_percentages(appid):
-    """Retorna dict {apiName: localPercentage} desde SteamHunters."""
+    """Retorna dict {apiName: localPercentage} desde SteamHunters (con caché local de 24h)."""
+    cached = _cache_get("percentages", appid)
+    if cached is not None:
+        return cached
     r = SESSION.get(f"{SH_BASE}/apps/{appid}/achievements", timeout=REQ_TIMEOUT)
     if r.status_code != 200:
         return {}
-    return {a["apiName"]: a["localPercentage"] for a in r.json()}
+    data = {a["apiName"]: a["localPercentage"] for a in r.json()}
+    _cache_set("percentages", appid, data)
+    return data
 
 
 def get_sh_completion_pct(appid):
-    """Retorna el PlayersCompletion% de SteamHunters para un juego."""
+    """Retorna el PlayersCompletion% de SteamHunters para un juego (con caché local de 24h)."""
+    cached = _cache_get("completion_pct", appid)
+    if cached is not None:
+        return cached
     r = SESSION.get(f"{SH_BASE}/apps/{appid}", timeout=REQ_TIMEOUT)
     if r.status_code != 200:
         return None
@@ -88,7 +136,9 @@ def get_sh_completion_pct(appid):
     qualified  = data.get("playersQualifiedCount", 0)
     if not qualified:
         return None
-    return (completed / qualified) * 100
+    pct = (completed / qualified) * 100
+    _cache_set("completion_pct", appid, pct)
+    return pct
 
 
 def get_statid_bit_map(api_key, appid, cookies):
@@ -228,6 +278,7 @@ def get_rarest_achievements_per_game(api_key, max_logros=DEFAULT_ACHIEVEMENT_SLO
             if result:
                 most_rare.append(result)
 
+    _save_sh_cache()
     return sorted(most_rare, key=lambda x: x[4])[:max_logros]
 
 
@@ -271,6 +322,7 @@ def get_rarest_completed_games(api_key, max_games=DEFAULT_COMPLETIST_SLOTS):
             if pct is not None:
                 completed.append((appid, name, pct, game_url))
 
+    _save_sh_cache()
     sorted_completed = sorted(completed, key=lambda x: x[2])
     return sorted_completed[:max_games], sorted_completed
 
@@ -452,7 +504,19 @@ def handle_auth_error():
 
 # ─── Menú principal ─────────────────────────────────────────────────────────
 
+def parse_args():
+    parser = argparse.ArgumentParser(description="Steam Hunters Showcase updater")
+    parser.add_argument(
+        "--dry-run", action="store_true",
+        help="Calcula y muestra el top de juegos/logros sin escribir nada en Steam",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+    _load_sh_cache()
+
     api_key = os.environ.get("STEAM_API_KEY") or input("Ingresa tu Steam API Key: ").strip()
 
     config = load_config()
@@ -476,7 +540,10 @@ def main():
         for i, (appid, name, pct, _) in enumerate(top6, 1):
             print(f"  {i}. [{pct:.4f}%] {name}")
 
-        update_completist_showcase(session_id, cookies, [appid for appid, _, _, _ in top6])
+        if args.dry_run:
+            print("\n🧪 Dry-run: no se escribió nada en Steam.")
+        else:
+            update_completist_showcase(session_id, cookies, [appid for appid, _, _, _ in top6])
 
     elif value == "2":
         session_id, cookies = get_cookies()
@@ -507,8 +574,11 @@ def main():
                 zip(achieve_entries, logros_subidos), 1):
             print(f"  {i:2}. [{pct:.4f}%] {nombre} — {juego}")
 
-        print("\nActualizando expositor de logros...")
-        send_achievement_showcase(session_id, cookies, config, achieve_entries)
+        if args.dry_run:
+            print("\n🧪 Dry-run: no se escribió nada en Steam.")
+        else:
+            print("\nActualizando expositor de logros...")
+            send_achievement_showcase(session_id, cookies, config, achieve_entries)
 
     else:
         print("Ingrese un valor válido")

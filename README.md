@@ -54,6 +54,23 @@ python scrapper_steam_hunters.py
 
 Y eliges la opción 1 o 2 del menú.
 
+### Dry-run
+
+```bash
+python scrapper_steam_hunters.py --dry-run
+```
+
+Calcula y muestra el top de juegos/logros (incluyendo la resolución de IDs internos en la
+opción 2) pero **no** escribe nada en tu perfil de Steam. Útil para probar cambios sin
+arriesgar tu expositor real.
+
+## Caché de SteamHunters
+
+Las consultas a SteamHunters (`localPercentage` y `PlayersCompletion%`) se cachean 24h en
+`sh_cache.json` (no se sube al repo). La rareza de un logro no cambia de un día para otro,
+así que esto evita volver a pedir esos datos para todos tus juegos en cada corrida. Si
+necesitas forzar datos frescos antes de ese plazo, borra el archivo.
+
 ## Seguridad
 
 `steam_config.json` y `steam_browser_profile/` contienen datos de tu cuenta (configuración
