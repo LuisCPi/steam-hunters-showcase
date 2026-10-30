@@ -23,6 +23,11 @@ REQ_TIMEOUT  = 15
 DEFAULT_ACHIEVEMENT_SLOTS = 21
 DEFAULT_COMPLETIST_SLOTS  = 6
 
+BROWSER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+)
+
 SH_CACHE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "sh_cache.json")
 SH_CACHE_TTL  = 24 * 60 * 60  # la rareza en SteamHunters casi no cambia día a día
 
@@ -30,8 +35,12 @@ _sh_cache_lock = threading.Lock()
 _sh_cache = {"percentages": {}, "completion_pct": {}}
 
 # Sesión compartida: reutiliza conexiones TCP/TLS entre los workers en vez de
-# abrir una nueva por request (grandes ahorros con cientos de llamadas).
+# abrir una nueva por request (grandes ahorros con cientos de llamadas). Un
+# User-Agent de navegador real (en vez del default de requests, que delata
+# tráfico de script) reduce la chance de que Cloudflare trate las llamadas a
+# SteamHunters como sospechosas y las frene/bloquee.
 SESSION = requests.Session()
+SESSION.headers.update({"User-Agent": BROWSER_USER_AGENT})
 _adapter = requests.adapters.HTTPAdapter(pool_connections=MAX_WORKERS, pool_maxsize=MAX_WORKERS * 2)
 SESSION.mount("https://", _adapter)
 SESSION.mount("http://", _adapter)
@@ -441,7 +450,7 @@ def send_achievement_showcase(session_id, cookies, config, achieve_entries):
     headers = {
         "Referer":      f"https://steamcommunity.com/profiles/{STEAM_ID}/edit/showcases",
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent":   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent":   BROWSER_USER_AGENT,
     }
     r = SESSION.post(
         f"https://steamcommunity.com/profiles/{STEAM_ID}/edit/",
@@ -458,7 +467,7 @@ def update_completist_showcase(session_id, cookies, appids):
     headers = {
         "Referer":      f"https://steamcommunity.com/profiles/{STEAM_ID}/edit/showcases",
         "Content-Type": "application/x-www-form-urlencoded",
-        "User-Agent":   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "User-Agent":   BROWSER_USER_AGENT,
     }
     for slot, appid in enumerate(tqdm(appids, desc="Actualizando expositor de completista", unit="slot")):
         payload = {
