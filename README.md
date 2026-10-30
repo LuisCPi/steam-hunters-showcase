@@ -29,11 +29,15 @@ El script pide estos datos la primera vez y los recuerda en `steam_config.json`
 - **Steam API Key**: puedes exportarla como variable de entorno `STEAM_API_KEY` para no
   tenerla que escribir cada vez.
 - **SteamID64**: variable de entorno `STEAM_ID`, o se pregunta la primera vez.
-- **Otros expositores activos** en tu perfil (para no pisarlos al actualizar el de logros).
 - **Cantidad de slots** de cada expositor (depende de tu nivel de Steam — revísalo en
   *Editar perfil → Expositores*). Es importante configurar el número real: si el script
   cree que tienes menos slots de los que realmente tienes habilitados, puede dejar vacío
   un slot que ya tenías lleno manualmente.
+
+Los demás expositores que tengas activos en el perfil (colección de juegos, replay del año,
+etc.) **no** hay que configurarlos a mano: antes de subir el expositor de logros, el script
+consulta en vivo a Steam cuáles están activos ahora mismo y los preserva, así que detecta
+automáticamente cualquier cambio que hagas en tu perfil entre una ejecución y otra.
 
 ## Sesión de Steam
 

@@ -28,12 +28,16 @@ SESSION.mount("https://", _adapter)
 SESSION.mount("http://", _adapter)
 
 SHOWCASE_NAMES = {
-    "1": "Juegos favoritos", "2": "Capturas de pantalla", "3": "Items destacados",
-    "4": "Artwork", "5": "Insignias", "6": "Items favoritos", "7": "Review",
-    "8": "Grupos", "9": "Amigos", "10": "Sala de trofeos", "11": "Workshop",
-    "12": "Colecciones", "13": "Guías", "14": "Artwork destacado",
-    "15": "Fan de videojuego", "17": "Logros", "22": "Perfil animado",
-    "23": "Expositor de completista", "24": "Replay del año",
+    "1": "Expositor de logros más infrecuentes", "2": "Colección de juegos",
+    "3": "Expositor de artículos", "4": "Artículos para intercambiar",
+    "5": "Colección de insignias", "6": "Juego favorito",
+    "7": "Expositor de capturas", "8": "Casilla de información personalizada",
+    "9": "Grupo favorito", "10": "Expositor de reseñas", "11": "Expositor de Workshop",
+    "12": "Mi expositor de Workshop", "13": "Expositor de material gráfico",
+    "14": "Expositor de videos", "15": "Guía favorita", "16": "Mis guías",
+    "17": "Expositor de logros", "20": "Estadísticas del Salien",
+    "21": "Expositor de premios", "22": "Expositor de material gráfico destacado",
+    "23": "Expositor de completista", "24": "Resumen de Steam (Replay del año)",
 }
 
 # ─── Utilidades Steam API ───────────────────────────────────────────────────
@@ -167,33 +171,20 @@ def _ask_int(prompt, default):
 
 def get_or_ask_setup(config):
     """
-    Pide la configuración inicial del perfil una sola vez: otros expositores
-    activos y cuántos slots tiene habilitados cada expositor que maneja este
-    script. Esto evita que al subir solo el top N se deje vacío un slot que
-    el usuario ya tenía lleno manualmente más allá de ese N.
+    Pide, una sola vez, cuántos slots tiene habilitados cada expositor que
+    maneja este script (depende del nivel de Steam). El resto de expositores
+    activos en el perfil (cuáles son, año de Replay, etc.) se detectan en
+    vivo desde Steam cada vez — ver get_live_showcase_state() — así que no
+    hace falta preguntarlos ni mantenerlos actualizados a mano.
     """
-    if "other_showcases" in config:
+    if "achievement_slots" in config:
         return config
 
-    print("\n⚙️  Primera configuración: ¿qué otros expositores tienes en tu perfil?")
-    print("  (Solo tipo numérico — NO incluyas 17, eso se maneja automáticamente)")
-    for k, v in sorted(SHOWCASE_NAMES.items(), key=lambda x: int(x[0])):
-        if k != "17":
-            print(f"    {k} = {v}")
-    tipos = input("\n  Ingresa los números separados por coma (ej: 23,24): ").strip()
-    otros = [t.strip() for t in tipos.split(",") if t.strip() and t.strip() != "17"]
-
-    replay_year = None
-    if "24" in otros:
-        replay_year = input("  ¿Qué año de Replay tienes configurado? (ej: 2025): ").strip()
-
-    print("\n⚙️  ¿Cuántos slots tienes habilitados en cada expositor?")
+    print("\n⚙️  Primera configuración: ¿cuántos slots tienes habilitados en cada expositor?")
     print("   (Steam → Editar perfil → Expositores — la cantidad depende de tu nivel de Steam)")
     achievement_slots = _ask_int("  Slots del expositor de LOGROS (tipo 17)", DEFAULT_ACHIEVEMENT_SLOTS)
     completist_slots  = _ask_int("  Slots del expositor de COMPLETISTA (tipo 23)", DEFAULT_COMPLETIST_SLOTS)
 
-    config["other_showcases"]   = otros
-    config["replay_year"]       = replay_year
     config["achievement_slots"] = achievement_slots
     config["completist_slots"]  = completist_slots
     save_config(config)
@@ -301,13 +292,61 @@ def _check_response(r, label):
         print(f"  ❌ {label}: HTTP {r.status_code} — {r.text[:200]}")
 
 
+def get_live_showcase_state(cookies):
+    """
+    Lee desde Steam (no desde config local) qué expositores están activos
+    en el perfil ahora mismo, y el año configurado en el expositor de Replay
+    si existe. La página de edición renderiza un <select name="profile_showcase[]">
+    por cada slot, con la opción actualmente elegida marcada con 'selected' —
+    esto evita que, al reenviar la lista completa de expositores, se desactive
+    uno que el script no conocía (por ejemplo uno agregado o cambiado después
+    de la primera configuración).
+    """
+    r = SESSION.get(
+        f"https://steamcommunity.com/profiles/{STEAM_ID}/edit/showcases",
+        cookies=cookies, timeout=REQ_TIMEOUT,
+    )
+    if r.status_code in (401, 403):
+        handle_auth_error()
+    r.raise_for_status()
+
+    soup = BeautifulSoup(r.text, "html.parser")
+
+    def _selected_value(select_tag):
+        # Cuando hay varios <option selected>, el HTML marca como realmente
+        # seleccionado al ÚLTIMO con ese atributo (así lo renderiza Steam para
+        # el combo de año de Replay, que deja "selected" tanto en el
+        # placeholder como en el año real). Tomamos el último para que
+        # coincida con lo que el navegador muestra como elegido.
+        opciones_marcadas = select_tag.find_all("option", selected=True)
+        if not opciones_marcadas:
+            return None
+        return opciones_marcadas[-1].get("value")
+
+    activos = []
+    for select in soup.find_all("select", attrs={"name": "profile_showcase[]"}):
+        valor = _selected_value(select)
+        if valor not in (None, "0", ""):
+            activos.append(valor)
+
+    replay_year = None
+    replay_select = soup.find("select", attrs={"name": "rgShowcaseConfig[24_0][0][replay_year]"})
+    if replay_select:
+        valor = _selected_value(replay_select)
+        if valor:
+            replay_year = valor
+
+    return activos, replay_year
+
+
 def send_achievement_showcase(session_id, cookies, config, achieve_entries):
-    """Envía el expositor de logros (tipo 17) preservando los demás expositores."""
+    """Envía el expositor de logros (tipo 17) preservando los demás expositores activos."""
     config["achievement_showcase"] = achieve_entries
     save_config(config)
 
-    otros  = config.get("other_showcases", [])
-    r_year = config.get("replay_year", "2025")
+    activos, replay_year = get_live_showcase_state(cookies)
+    otros = [t for t in activos if t != "17"]
+    print(f"  Expositores activos detectados: {', '.join(SHOWCASE_NAMES.get(t, t) for t in activos)}")
 
     payload = [
         ("sessionID", session_id),
@@ -319,8 +358,8 @@ def send_achievement_showcase(session_id, cookies, config, achieve_entries):
     for t in otros:
         payload.append(("profile_showcase[]",            t))
         payload.append(("profile_showcase_purchaseid[]", "0"))
-        if t == "24" and r_year:
-            payload.append((f"rgShowcaseConfig[24_0][0][replay_year]", r_year))
+        if t == "24" and replay_year:
+            payload.append((f"rgShowcaseConfig[24_0][0][replay_year]", replay_year))
     for i, (appid, title) in enumerate(achieve_entries):
         payload.append((f"rgShowcaseConfig[{ACHIEVE_KEY}][{i}][appid]", str(appid)))
         payload.append((f"rgShowcaseConfig[{ACHIEVE_KEY}][{i}][title]", title))
