@@ -64,12 +64,18 @@ Calcula y muestra el top de juegos/logros (incluyendo la resolución de IDs inte
 opción 2) pero **no** escribe nada en tu perfil de Steam. Útil para probar cambios sin
 arriesgar tu expositor real.
 
-## Caché de SteamHunters
+## Caché y resiliencia ante SteamHunters
 
 Las consultas a SteamHunters (`localPercentage` y `PlayersCompletion%`) se cachean 24h en
 `sh_cache.json` (no se sube al repo). La rareza de un logro no cambia de un día para otro,
 así que esto evita volver a pedir esos datos para todos tus juegos en cada corrida. Si
 necesitas forzar datos frescos antes de ese plazo, borra el archivo.
+
+SteamHunters está detrás de Cloudflare y a veces responde lento, con un timeout, o con un
+429/5xx bajo la carga de los 10 workers concurrentes. El script reintenta automáticamente
+esos casos (con backoff) antes de darse por vencido con ese juego puntual — nunca tumba
+toda la corrida por un fallo transitorio, y lo que ya se obtuvo antes del fallo queda
+guardado en el caché igual.
 
 ## Seguridad
 
