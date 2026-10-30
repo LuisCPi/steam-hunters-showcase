@@ -110,13 +110,30 @@ def _cache_set(bucket, key, value):
         _sh_cache[bucket][str(key)] = {"ts": time.time(), "value": value}
 
 
+def _sh_get(url, retries=2, backoff=1.5):
+    """
+    GET a SteamHunters con un par de reintentos ante timeouts/errores de red
+    transitorios (el sitio a veces tarda o falla bajo los 10 workers
+    concurrentes). Si se agotan los reintentos, retorna None en vez de
+    lanzar la excepción, para que el juego se trate como "sin datos" en
+    lugar de tumbar toda la corrida.
+    """
+    for attempt in range(retries + 1):
+        try:
+            return SESSION.get(url, timeout=REQ_TIMEOUT)
+        except requests.exceptions.RequestException:
+            if attempt == retries:
+                return None
+            time.sleep(backoff * (attempt + 1))
+
+
 def get_sh_percentages(appid):
     """Retorna dict {apiName: localPercentage} desde SteamHunters (con caché local de 24h)."""
     cached = _cache_get("percentages", appid)
     if cached is not None:
         return cached
-    r = SESSION.get(f"{SH_BASE}/apps/{appid}/achievements", timeout=REQ_TIMEOUT)
-    if r.status_code != 200:
+    r = _sh_get(f"{SH_BASE}/apps/{appid}/achievements")
+    if r is None or r.status_code != 200:
         return {}
     data = {a["apiName"]: a["localPercentage"] for a in r.json()}
     _cache_set("percentages", appid, data)
@@ -128,8 +145,8 @@ def get_sh_completion_pct(appid):
     cached = _cache_get("completion_pct", appid)
     if cached is not None:
         return cached
-    r = SESSION.get(f"{SH_BASE}/apps/{appid}", timeout=REQ_TIMEOUT)
-    if r.status_code != 200:
+    r = _sh_get(f"{SH_BASE}/apps/{appid}")
+    if r is None or r.status_code != 200:
         return None
     data = r.json()
     completed  = data.get("playersCompletedCount", 0)
@@ -271,14 +288,17 @@ def get_rarest_achievements_per_game(api_key, max_logros=DEFAULT_ACHIEVEMENT_SLO
     games_con_logros = [g for g in games if g.get("has_community_visible_stats")]
     most_rare = []
 
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(process_game_achievements, api_key, g): g for g in games_con_logros}
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Procesando juegos", unit="juego"):
-            result = future.result()
-            if result:
-                most_rare.append(result)
+    try:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {executor.submit(process_game_achievements, api_key, g): g for g in games_con_logros}
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Procesando juegos", unit="juego"):
+                result = future.result()
+                if result:
+                    most_rare.append(result)
+    finally:
+        # Guardar siempre lo ya obtenido, incluso si algún juego falló a mitad de camino.
+        _save_sh_cache()
 
-    _save_sh_cache()
     return sorted(most_rare, key=lambda x: x[4])[:max_logros]
 
 
@@ -313,16 +333,18 @@ def get_rarest_completed_games(api_key, max_games=DEFAULT_COMPLETIST_SLOTS):
 
     # Obtener completion% de SteamHunters solo para los juegos completados (en paralelo)
     completed = []
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {executor.submit(get_sh_completion_pct, appid): (appid, name, game_url)
-                   for appid, name, game_url in completed_base}
-        for future in tqdm(as_completed(futures), total=len(futures), desc="Consultando SteamHunters", unit="juego"):
-            appid, name, game_url = futures[future]
-            pct = future.result()
-            if pct is not None:
-                completed.append((appid, name, pct, game_url))
-
-    _save_sh_cache()
+    try:
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {executor.submit(get_sh_completion_pct, appid): (appid, name, game_url)
+                       for appid, name, game_url in completed_base}
+            for future in tqdm(as_completed(futures), total=len(futures), desc="Consultando SteamHunters", unit="juego"):
+                appid, name, game_url = futures[future]
+                pct = future.result()
+                if pct is not None:
+                    completed.append((appid, name, pct, game_url))
+    finally:
+        # Guardar siempre lo ya obtenido, incluso si algún juego falló a mitad de camino.
+        _save_sh_cache()
     sorted_completed = sorted(completed, key=lambda x: x[2])
     return sorted_completed[:max_games], sorted_completed
 
